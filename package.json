@@ -1,0 +1,25 @@
+{
+  "name": "pyimpinj",
+  "version": "1.0.0",
+  "description": "Impinj R2000 protocol.  =========================",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hex-in/pyImpinj.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/hex-in/pyImpinj/issues"
+  },
+  "homepage": "https://github.com/hex-in/pyImpinj#readme",
+  "dependencies": {
+    "@types/node": "^17.0.21",
+    "eventemitter3": "^4.0.7",
+    "serialport": "^10.4.0",
+    "typescript": "^4.6.2"
+  }
+}
