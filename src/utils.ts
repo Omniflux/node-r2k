@@ -1,9 +1,9 @@
 
 export function checksum(bytes: number[] | Uint8Array) {
-  let uSum = 0;
+  let uSum = new Uint8Array(1);
   for (const byte of bytes) {
-    uSum = (uSum + byte) & 0xFF;
+    uSum[0] += byte;
   }
-  uSum = ((~uSum) + 1) & 0xFF;
-  return uSum;
+  uSum[0] = (~uSum[0]) + 1;
+  return uSum[0];
 }

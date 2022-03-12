@@ -71,18 +71,18 @@ export class Protocol {
   __address = 0xA0;
   #address = 0xFF;
 
-  commandMap: {[command: number]: keyof Protocol} = {};
+  static commandMap: {[command: number]: keyof Protocol} = {};
 
   constructor(protected serial: SerialPort) {
 
   }
 
   registerHandler(command: Command, handler: keyof Protocol) {
-    this.commandMap[command] = handler;
+    Protocol.commandMap[command] = handler;
   }
 
   handleMessage(cmd: Command, ...args: any[]) {
-    const fnName = this.commandMap[cmd];
+    const fnName = Protocol.commandMap[cmd];
     if (!fnName) { throw new Error(`Invalid command: ${cmd.toString(16)}`); }
 
     const data: number[] = (<any>this[fnName])?.(...args) ?? [];

@@ -9,6 +9,7 @@ import { checksum } from './utils';
 
 import eventemitter3 from 'eventemitter3';
 
+const TIMEOUT = 5000;
 const STARTBYTE = 0xA0;
 const PADCHAR = '×';
 
@@ -40,14 +41,22 @@ function decodeTag(packet: SerialResponse): RFIDTag {
     antenna: ant,
     frequency: freq,
     rssi,
-    PC: [...PC].map(n => n.toString(16)).join(),
-    EPC: [...EPC].map(n => n.toString(16)).join(),
+    PC: [...PC].map(n => hexStr(n)).join(''),
+    EPC: [...EPC].map(n => hexStr(n)).join(''),
   };
+}
+
+function getTagId(tag: RFIDTag) {
+  return tag.PC
+}
+
+function hexStr(num?: number) {
+  return num?.toString(16).padStart(2, '0');
 }
 
 function findResponse(data: Buffer) : [SerialResponse, Buffer] | [false] {
   if (data.at(0) !== STARTBYTE || data.length < 2) {
-    throw new Error("Invalid data, no start byte!");
+    return [false];
   }
 
   const length = data.at(1)!;
@@ -56,20 +65,20 @@ function findResponse(data: Buffer) : [SerialResponse, Buffer] | [false] {
 
   const totalPacket = data.subarray(0, totalLen);
   const check = totalPacket.at(totalLen - 1);
-  const calculated = checksum(totalPacket);
+  const calculated = checksum(totalPacket.subarray(0, -1));
   if (check !== calculated) {
-    debug(`Checksum failed on packet!`, totalPacket, `expected ${calculated} received ${check}`);
+    debug(`Checksum failed on packet!`, totalPacket, `expected ${hexStr(calculated)} received ${hexStr(check)}`);
   }
   const command = data.at(3)! as Command;
   if (!Object.values(Commands).includes(command)) {
-    console.warn("Received a response code without a valid command field!", "0x" + [...totalPacket].map(p => `${p.toString(16)}`).join(' '));
+    console.warn("Received a response code without a valid command field!", "0x" + [...totalPacket].map(p => `${hexStr(p)}`).join(' '));
   }
 
   return [{
     length,
     address: data.at(2)!,
     command,
-    data: data.subarray(4, length - 2),
+    data: data.subarray(4, -1),
   }, data.subarray(totalLen+1)];
 }
 
@@ -137,29 +146,6 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
 
   resolvers: ResponseResolvers = {};
 
-  // catch_exception( func ) {
-  //     wrapper( *args, **kwargs ) {
-  //         try:
-  //             return func( *args, **kwargs )
-  //         except BaseException as err:
-  //             logging.error( str( err ) )
-  //             return 0
-  //     return wrapper
-
-  // analyze_data( method='RESULT', timeout=3 ) {
-  //     decorator( func ) {
-  //         wrapper( *args, **kwargs ) {
-  //             func( *args, **kwargs )
-  //             try:
-  //                 data = this.command_queue.get( timeout=timeout )
-  //                 if method == 'DATA':
-  //                     return data['data']
-  //                 else:
-  //                     return ( True if data['data'][0] == ImpinjR2KGlobalErrors.SUCCESS else False, ImpinjR2KGlobalErrors.to_string( data['data'][0] ) )
-  //             except BaseException as err:
-  //                 logging.error( '[ERROR] ANALYZE_DATA error {} or COMMAND QUEUE is timeout.'.format( err ) )
-  //                 return bytes( [ ImpinjR2KGlobalErrors.FAIL ] )
-  //         return wrapper
   //     return decorator
 
   constructor( serialPort: SerialPortOpenOptions, protected address = 0xFF ) {
@@ -169,7 +155,11 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
     this.protocol = new Protocol( serial );
 
     serial.on("data", (chunk: Buffer) => {
+      debug(`Received ${chunk.length} bytes from serial port: `, chunk);
       const fullBuf = this.dataBuf = Buffer.concat([this.dataBuf, chunk]);
+
+      //don't try to decode if we don't have enough to work with
+      if (fullBuf.length < 3) return;
       const [found, data] = decodeResponse(fullBuf);
 
       if (found) {
@@ -183,6 +173,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
             if (found.length !== 0x0A) {
               // 0x0A is the "succeeded" response, not a tag response
               const tag = decodeTag(found);
+              debug("Tag found:", tag);
               this.emit('tagFound', tag, new Date());
               return;
             }
@@ -203,7 +194,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
     });
   }
 
-  waitForResponse(cmd: Command, timeout: number = 250) {
+  waitForResponse(cmd: Command, timeout: number = TIMEOUT) {
     if (!this.resolvers[cmd]) this.resolvers[cmd] = [];
     return new Promise<SerialResponse>((resolve, reject) => {
       let timedOut = false;
@@ -226,7 +217,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
   async sendMessage(command: Command, data?: number[], waitResponse?: true) : Promise<SerialResponse>;
   async sendMessage(command: Command, data: number[], waitResponse: false) : Promise<null>;
   async sendMessage(command: Command, data: number[] = [], waitResponse = true) {
-    const len = data.length + 2; // length of the p
+    const len = data.length + 3; // length of the packet
     const message = [
       STARTBYTE,
       len,
@@ -236,7 +227,8 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
     ];
     const check = checksum(message);
     message.push(check);
-    const bytes = new Uint8Array(check);
+    const bytes = new Uint8Array(message);
+    debug("Writing to serial port:", [...bytes].map(b => hexStr(b)).join(' '));
     this.serial.write(bytes);
     if (waitResponse) {
       const response = await this.waitForResponse(command);
@@ -282,7 +274,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
   }
 
   /**
-   * Use this if you change it frequently so it doesn't save to the EEPROM and reduce the life
+   * Use this if you change it frequently so it doesn't save to the EEPROM and reduce the lifd
    * @param value 20-33dBm
    */
    async fast_power( value=22 ) {
@@ -350,7 +342,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
 
   async temperature() {
     const resp = await this.sendMessage(Commands.GET_READER_TEMPERATURE);
-    const isNegative = !!resp.data[0];
+    const isNegative = !resp.data[0];
     const temp = resp.data[1] * (isNegative ? -1 : 1);
     debug(`Reader temperature is ${temp}℃`);
 
