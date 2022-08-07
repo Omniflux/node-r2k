@@ -10,6 +10,10 @@ export const FastSwitchInventory = <const>{
 };
 export type FastSwitchInventory = typeof FastSwitchInventory[keyof typeof FastSwitchInventory];
 
+export function getCommandName(cmd: typeof Commands[keyof typeof Commands]): string {
+  const entry = Object.entries(Commands).find(([k, v]) => v === cmd);
+  return entry![0] || '(unknown)';
+}
 export const Commands = <const>{
   GET_GPIO_VALUE              : 0x60,
   SET_GPIO_VALUE              : 0x61,

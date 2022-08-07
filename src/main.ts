@@ -3,13 +3,13 @@
 
 import { SerialPort } from 'serialport';
 import { FREQUENCY_TABLES, READER_ANTENNA } from './constant';
-import { Command, Commands, FastSwitchInventory } from './enums';
+import { Command, Commands, FastSwitchInventory, getCommandName } from './enums';
 import { Protocol } from './protocol';
 import { checksum } from './utils';
 
 import eventemitter3 from 'eventemitter3';
 
-const TIMEOUT = 5000;
+const TIMEOUT = 1000;
 const STARTBYTE = 0xA0;
 const PADCHAR = '×';
 
@@ -17,7 +17,7 @@ const DEBUG = true;
 
 function debug(...args: Parameters<typeof console.warn>) {
   if (!DEBUG) return;
-  return console.warn(...args);
+  return console.warn(Date.now(), ...args);
 }
 
 interface SerialResponse {
@@ -68,6 +68,7 @@ function findResponse(data: Buffer) : [SerialResponse, Buffer] | [false] {
   const calculated = checksum(totalPacket.subarray(0, -1));
   if (check !== calculated) {
     debug(`Checksum failed on packet!`, totalPacket, `expected ${hexStr(calculated)} received ${hexStr(check)}`);
+    return [false];
   }
   const command = data.at(3)! as Command;
   if (!Object.values(Commands).includes(command)) {
@@ -78,7 +79,7 @@ function findResponse(data: Buffer) : [SerialResponse, Buffer] | [false] {
     length,
     address: data.at(2)!,
     command,
-    data: data.subarray(4, -1),
+    data: totalPacket.subarray(4, -1),
   }, data.subarray(totalLen+1)];
 }
 
@@ -94,19 +95,19 @@ function decodeResponse(data: Buffer): [SerialResponse, Buffer] | [false] {
   }
 }
 
-interface FastSwitchInventoryParams {
-  A: FastSwitchInventory;
-  Aloop: number;
-  B: FastSwitchInventory;
-  Bloop: number;
-  C: FastSwitchInventory;
-  Cloop: number;
-  D: FastSwitchInventory;
-  Dloop: number;
-  Interval: number;
-  Repeat: number;
+export interface FastSwitchInventoryParams {
+  A?: FastSwitchInventory;
+  Aloop?: number;
+  B?: FastSwitchInventory;
+  Bloop?: number;
+  C?: FastSwitchInventory;
+  Cloop?: number;
+  D?: FastSwitchInventory;
+  Dloop?: number;
+  Interval?: number;
+  Repeat?: number;
 };
-const DefaultFSInventory: FastSwitchInventoryParams = {
+export const DefaultFSInventory: FastSwitchInventoryParams = {
   A: FastSwitchInventory.ANTENNA1,
   Aloop: 1,
   B: FastSwitchInventory.DISABLED,
@@ -138,6 +139,10 @@ interface R2KReaderEvents {
   tagFound: (tag: RFIDTag, when: Date) => void;
 }
 
+export function formatPacket(packet: SerialResponse) {
+  return `[&${hexStr(packet.address)}] Command: ${getCommandName(packet.command)} (${hexStr(packet.command)}) ${packet.length} bytes`;
+}
+
 export class R2KReader extends eventemitter3<R2KReaderEvents> {
   serial: SerialPort;
   protocol: Protocol;
@@ -164,22 +169,23 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
 
       if (found) {
         this.dataBuf = data;
-        debug("Received response packet:", found);
+        debug("Received response packet:", formatPacket(found));
 
         switch(found.command) {
           // There are some command responses which may not be strictly a response to a single command
           case Commands.FAST_SWITCH_ANT_INVENTORY:
           case Commands.REAL_TIME_INVENTORY:
-            if (found.length !== 0x0A) {
+            if (found.length === 0x05) {
+              // Antenna error of some kind?
+              console.warn("Antenna error/warning when reading inventory");
+            } else if (found.length !== 0x0A) {
               // 0x0A is the "succeeded" response, not a tag response
               const tag = decodeTag(found);
-              debug("Tag found:", tag);
+              // debug("Tag found:", tag);
               this.emit('tagFound', tag, new Date());
               return;
             }
             break;
-          case Commands.FAST_SWITCH_ANT_INVENTORY:
-
         }
 
         const res = this.resolvers[found.command]?.shift();
@@ -198,25 +204,33 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
     if (!this.resolvers[cmd]) this.resolvers[cmd] = [];
     return new Promise<SerialResponse>((resolve, reject) => {
       let timedOut = false;
-      const tid = setTimeout(() => {
-        timedOut = true;
-        reject(new Error("timeout"));
-      }, timeout);
       const resolveWrapper = (resp: SerialResponse | PromiseLike<SerialResponse>) => {
+        // debug("Command response from", getCommandName(cmd));
         if (timedOut) {
           console.warn("Promise resolved after timeout", resp);
-          this.resolvers[cmd] = this.resolvers[cmd]?.filter(fn => fn !== resolveWrapper) ?? [];
+          removeResolver();
         } else {
+          clearTimeout(tid);
           resolve(resp);
         }
       };
       this.resolvers[cmd].push(resolveWrapper);
+      const removeResolver = () => {
+        this.resolvers[cmd] = this.resolvers[cmd]?.filter(fn => fn !== resolveWrapper) ?? [];
+      };
+
+      const tid = setTimeout(() => {
+        timedOut = true;
+        removeResolver();
+        reject(new Error(`Timeout waiting for ${getCommandName(cmd)}`));
+      }, timeout);
+
     });
   }
 
-  async sendMessage(command: Command, data?: number[], waitResponse?: true) : Promise<SerialResponse>;
+  async sendMessage(command: Command, data?: number[], waitResponse?: true, timeout?: number) : Promise<SerialResponse>;
   async sendMessage(command: Command, data: number[], waitResponse: false) : Promise<null>;
-  async sendMessage(command: Command, data: number[] = [], waitResponse = true) {
+  async sendMessage(command: Command, data: number[] = [], waitResponse = true, timeout = TIMEOUT) {
     const len = data.length + 3; // length of the packet
     const message = [
       STARTBYTE,
@@ -228,11 +242,10 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
     const check = checksum(message);
     message.push(check);
     const bytes = new Uint8Array(message);
-    debug("Writing to serial port:", [...bytes].map(b => hexStr(b)).join(' '));
+    debug(`Writing to serial port: ${getCommandName(command)}`, [...bytes].map(b => hexStr(b)).join(' '));
     this.serial.write(bytes);
     if (waitResponse) {
-      const response = await this.waitForResponse(command);
-      return response;
+      return this.waitForResponse(command);
     }
     return null;
   }
@@ -289,7 +302,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
     this.sendMessage(Commands.REAL_TIME_INVENTORY, [repeat], false);
   }
 
-  start_fast_switch_ant_inventory( {A, Aloop, B, Bloop, C, Cloop, D, Dloop, Interval, Repeat}: FastSwitchInventoryParams = DefaultFSInventory) {
+  async start_fast_switch_ant_inventory( {A, Aloop, B, Bloop, C, Cloop, D, Dloop, Interval, Repeat}: FastSwitchInventoryParams = DefaultFSInventory) {
     const data = [
       A || FastSwitchInventory.DISABLED, 
       Aloop || 1,
@@ -302,7 +315,16 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
       Interval || 5,
       Repeat || 1,
     ];
-    this.sendMessage(Commands.FAST_SWITCH_ANT_INVENTORY, data, false);
+    const readResult = await this.sendMessage(Commands.FAST_SWITCH_ANT_INVENTORY, data, true, TIMEOUT * 3);
+    const rData = readResult.data;
+    const countbuff = Buffer.from([0, ...rData.subarray(0, 3)]);
+    const readCount = countbuff.readUint32BE();
+    const readDuration = readResult.data.subarray(3, 7).readUint32BE();
+
+    return {
+      count: readCount,
+      duration: readDuration,
+    };
   }
 
   get_work_antenna() {
@@ -344,7 +366,11 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
     const resp = await this.sendMessage(Commands.GET_READER_TEMPERATURE);
     const isNegative = !resp.data[0];
     const temp = resp.data[1] * (isNegative ? -1 : 1);
-    debug(`Reader temperature is ${temp}℃`);
+    // debug(`Reader temperature is ${temp}℃`);
+    // Convert degrees C to degrees F
+
+    // const degF = 
+    return temp;
 
       // value  = ImpinjR2KReader.analyze_data( 'DATA' )( lambda x, y : y )( None )
       // logging.info( 'Reader temperature is {}C'.format( value[1]*( -1 if value[0] == 0 else 1 ) ) )
