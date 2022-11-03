@@ -2,7 +2,8 @@
   "name": "node-r2k",
   "version": "1.0.0",
   "description": "Impinj R2000 client",
-  "main": "index.js",
+  "main": "dist/main.js",
+  "types": "dist/main.d.ts",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
