@@ -2,15 +2,13 @@
 // Ported from https://github.com/hex-in/pyImpinj
 
 import { SerialPort } from 'serialport';
-import { FREQUENCY_TABLES, READER_ANTENNA } from './constant';
-import { Command, Commands, FastSwitchInventory, getCommandName } from './enums';
+import { AntennaDetector, AntennaID, Command, FrequencyTable, IdentifierLength, InventoryRepeat, OutputPower, PacketHeader } from './constants';
 import { Protocol } from './protocol';
-import { checksum } from './utils';
+import { checksum, getCommandName } from './utilities';
 
 import eventemitter3 from 'eventemitter3';
 
 const TIMEOUT = 1000;
-const STARTBYTE = 0xA0;
 const PADCHAR = '×';
 
 const DEBUG = true;
@@ -55,7 +53,7 @@ function hexStr(num?: number) {
 }
 
 function findResponse(data: Buffer) : [SerialResponse, Buffer] | [false] {
-  if (data.at(0) !== STARTBYTE || data.length < 2) {
+  if (data.at(0) !== PacketHeader || data.length < 2) {
     return [false];
   }
 
@@ -71,7 +69,7 @@ function findResponse(data: Buffer) : [SerialResponse, Buffer] | [false] {
     return [false];
   }
   const command = data.at(3)! as Command;
-  if (!Object.values(Commands).includes(command)) {
+  if (!Object.values(Command).includes(command)) {
     console.warn("Received a response code without a valid command field!", "0x" + [...totalPacket].map(p => `${hexStr(p)}`).join(' '));
   }
 
@@ -86,7 +84,7 @@ function findResponse(data: Buffer) : [SerialResponse, Buffer] | [false] {
 function decodeResponse(data: Buffer): [SerialResponse, Buffer] | [false] {
   let startIndex = -1;
   while (true) {
-    startIndex = data.indexOf(STARTBYTE, startIndex + 1);
+    startIndex = data.indexOf(PacketHeader, startIndex + 1);
     if (startIndex === -1) return [false];
     const [found, remaining] = findResponse(data.subarray(startIndex));
     if (found) {
@@ -96,25 +94,25 @@ function decodeResponse(data: Buffer): [SerialResponse, Buffer] | [false] {
 }
 
 export interface FastSwitchInventoryParams {
-  A?: FastSwitchInventory;
+  A?: AntennaID;
   Aloop?: number;
-  B?: FastSwitchInventory;
+  B?: AntennaID;
   Bloop?: number;
-  C?: FastSwitchInventory;
+  C?: AntennaID;
   Cloop?: number;
-  D?: FastSwitchInventory;
+  D?: AntennaID;
   Dloop?: number;
   Interval?: number;
   Repeat?: number;
 };
 export const DefaultFSInventory: FastSwitchInventoryParams = {
-  A: FastSwitchInventory.ANTENNA1,
+  A: AntennaID.A1,
   Aloop: 1,
-  B: FastSwitchInventory.DISABLED,
+  B: AntennaID.DISABLED,
   Bloop: 1,
-  C: FastSwitchInventory.DISABLED,
+  C: AntennaID.DISABLED,
   Cloop: 1,
-  D: FastSwitchInventory.DISABLED,
+  D: AntennaID.DISABLED,
   Dloop: 1,
   Interval: 0, Repeat: 1,
 };
@@ -173,8 +171,8 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
 
         switch(found.command) {
           // There are some command responses which may not be strictly a response to a single command
-          case Commands.FAST_SWITCH_ANT_INVENTORY:
-          case Commands.REAL_TIME_INVENTORY:
+          case Command.FAST_SWITCH_ANT_INVENTORY:
+          case Command.REAL_TIME_INVENTORY:
             if (found.length === 0x05) {
               // Antenna error of some kind?
               console.warn("Antenna error/warning when reading inventory");
@@ -233,7 +231,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
   async sendMessage(command: Command, data: number[] = [], waitResponse = true, timeout = TIMEOUT) {
     const len = data.length + 3; // length of the packet
     const message = [
-      STARTBYTE,
+      PacketHeader,
       len,
       this.address,
       command,
@@ -253,13 +251,13 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
   //-------------------------------------------------
 
   async identifier() {
-    const res = await this.sendMessage(Commands.GET_READER_IDENTIFIER, []);
+    const res = await this.sendMessage(Command.GET_READER_IDENTIFIER, []);
     return String.fromCharCode(...res!.data.filter(Boolean));
   }
   async setIdentifier(ident: string) {
-    const newIdent = ident.substring(0, 12).padEnd(12, PADCHAR);
+    const newIdent = ident.substring(0, IdentifierLength).padEnd(IdentifierLength, PADCHAR);
     const data = newIdent.split('').map(c => c === PADCHAR ? 0 : c.charCodeAt(0));
-    const res = await this.sendMessage(Commands.SET_READER_IDENTIFIER, data);
+    const res = await this.sendMessage(Command.SET_READER_IDENTIFIER, data);
   }
 
   /**
@@ -269,12 +267,12 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
    * @param antenna3 0 to 33 dBm
    * @param antenna4 0 to 33 dBm
    */
-  async set_output_power( antenna1=20, antenna2=20, antenna3=20, antenna4=20 ) {
+  async set_output_power( antenna1=OutputPower.MIN_TEMPORARY, antenna2=OutputPower.MIN_TEMPORARY, antenna3=OutputPower.MIN_TEMPORARY, antenna4=OutputPower.MIN_TEMPORARY ) {
     debug( `[SET RF POWER] Antenna1 = ${antenna1}dBm` )
     debug( `[SET RF POWER] Antenna2 = ${antenna2}dBm` )
     debug( `[SET RF POWER] Antenna3 = ${antenna3}dBm` )
     debug( `[SET RF POWER] Antenna4 = ${antenna4}dBm` )
-    await this.sendMessage(Commands.SET_RF_POWER, [antenna1, antenna2, antenna3, antenna4]);
+    await this.sendMessage(Command.SET_RF_POWER, [antenna1, antenna2, antenna3, antenna4]);
     // this.protocol.set_rf_power( ant1=antenna1, ant2=antenna2, ant3=antenna3, ant4=antenna4 )
   }
 
@@ -283,39 +281,39 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
   }
 
   reset() {
-    this.sendMessage(Commands.RESET, [], false);
+    this.sendMessage(Command.RESET, [], false);
   }
 
   /**
    * Use this if you change it frequently so it doesn't save to the EEPROM and reduce the lifd
    * @param value 20-33dBm
    */
-   async fast_power( value=22 ) {
+   async fast_power( value=OutputPower.MIN_TEMPORARY ) {
     debug( `[FAST SET RF POWER] ${value}dBm` );
-    await this.sendMessage(Commands.SET_TEMPORARY_OUTPUT_POWER, [value]);
+    await this.sendMessage(Command.SET_TEMPORARY_OUTPUT_POWER, [value]);
   }
 
-  async set_work_antenna( antenna=READER_ANTENNA['ANTENNA1'] ) {
-    await this.sendMessage(Commands.SET_WORK_ANTENNA, [antenna]);
+  async set_work_antenna( antenna: number = AntennaID.A1 ) {
+    await this.sendMessage(Command.SET_WORK_ANTENNA, [antenna]);
   }
   start_real_time_inventory(repeat: number) {
-    this.sendMessage(Commands.REAL_TIME_INVENTORY, [repeat], false);
+    this.sendMessage(Command.REAL_TIME_INVENTORY, [repeat], false);
   }
 
   async start_fast_switch_ant_inventory( {A, Aloop, B, Bloop, C, Cloop, D, Dloop, Interval, Repeat}: FastSwitchInventoryParams = DefaultFSInventory) {
     const data = [
-      A || FastSwitchInventory.DISABLED, 
+      A || AntennaID.DISABLED, 
       Aloop || 1,
-      B || FastSwitchInventory.DISABLED, 
+      B || AntennaID.DISABLED, 
       Bloop || 1,
-      C || FastSwitchInventory.DISABLED, 
+      C || AntennaID.DISABLED, 
       Cloop || 1,
-      D || FastSwitchInventory.DISABLED, 
+      D || AntennaID.DISABLED, 
       Dloop || 1,
       Interval || 5,
       Repeat || 1,
     ];
-    const readResult = await this.sendMessage(Commands.FAST_SWITCH_ANT_INVENTORY, data, true, TIMEOUT * 3);
+    const readResult = await this.sendMessage(Command.FAST_SWITCH_ANT_INVENTORY, data, true, TIMEOUT * 3);
     const rData = readResult.data;
     const countbuff = Buffer.from([0, ...rData.subarray(0, 3)]);
     const readCount = countbuff.readUint32BE();
@@ -331,7 +329,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
       this.protocol.get_work_antenna( )
   }
 
-  set_ant_connection_detector( loss=0 ) {
+  set_ant_connection_detector( loss:AntennaDetector=0 ) {
       this.protocol.set_ant_connection_detector( loss=loss )
   }
 
@@ -339,16 +337,16 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
       this.protocol.get_ant_connection_detector( )
   }
 
-  async get_rf_port_return_loss( freq=FREQUENCY_TABLES[0] ) {
-    const param = FREQUENCY_TABLES.indexOf(freq);
+  async get_rf_port_return_loss( freq=FrequencyTable[0] ) {
+    const param = FrequencyTable.indexOf(freq);
     if (param < 0) throw new Error("Invalid frequency!");
 
-    const resp = await this.sendMessage(Commands.GET_RF_PORT_RETURN_LOSS, [param]);
+    const resp = await this.sendMessage(Command.GET_RF_PORT_RETURN_LOSS, [param]);
 
     return resp.data[0];
   }
 
-  rt_inventory( repeat=1 ) {
+  rt_inventory( repeat:InventoryRepeat=1 ) {
       this.protocol.rt_inventory( repeat=repeat )
   }
 
@@ -363,7 +361,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
   }
 
   async temperature() {
-    const resp = await this.sendMessage(Commands.GET_READER_TEMPERATURE);
+    const resp = await this.sendMessage(Command.GET_READER_TEMPERATURE);
     const isNegative = !resp.data[0];
     const temp = resp.data[1] * (isNegative ? -1 : 1);
     // debug(`Reader temperature is ${temp}℃`);
@@ -401,7 +399,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
   // inventory( repeat=0xFF ) {
   //     this.protocol.inventory( repeat=repeat )
   //     value = ImpinjR2KReader.analyze_data( 'DATA' )( lambda x, y : y )( None )
-  //     if ( value[0] == ImpinjR2KGlobalErrors.ANTENNA_MISSING_ERROR ) or ( value[0] == ImpinjR2KGlobalErrors.FAIL ) {
+  //     if ( value[0] == Errors.ANTENNA_MISSING_ERROR ) or ( value[0] == Errors.FAIL ) {
   //         return 0
 
   //     try:
@@ -421,7 +419,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
   // get_inventory_buffer_tag_count() {
   //     this.protocol.get_inventory_buffer_tag_count( )
   //     value = ImpinjR2KReader.analyze_data( 'DATA' )( lambda x, y : y )( None )
-  //     if ( value[0] == ImpinjR2KGlobalErrors.ANTENNA_MISSING_ERROR ) or ( value[0] == ImpinjR2KGlobalErrors.FAIL ) {
+  //     if ( value[0] == Errors.ANTENNA_MISSING_ERROR ) or ( value[0] == Errors.FAIL ) {
   //         return 0
   //     count = struct.unpack( '>H', value )[0]
   //     logging.info( 'Inventory buffer tag count {}'.format( count ) )
@@ -485,7 +483,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
   //         tags.append( this.__unpack_inventory_buffer( value ) )
   //     //### Bugfix:20200302
   //     value = ImpinjR2KReader.analyze_data( 'DATA' )( lambda x, y : y )( None )
-  //     logging.info( 'GET_AND_RESET_INVENTORY_BUFFER = {}'.format( ImpinjR2KGlobalErrors.to_string( value[0] ) ) )
+  //     logging.info( 'GET_AND_RESET_INVENTORY_BUFFER = {}'.format( Errors.to_string( value[0] ) ) )
   //     return tags
   // // }
   
@@ -516,7 +514,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
   //     try:
   //         count, length = struct.unpack( '>HB', value[0:3] )
   //     except BaseException:
-  //         logging.error( ImpinjR2KGlobalErrors.to_string( value[0] ) )
+  //         logging.error( Errors.to_string( value[0] ) )
   //         return ''
 
   //     pc   = struct.unpack( '>H', value[3:5] )[0]
@@ -577,7 +575,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
   //     try:
   //         count, length = struct.unpack( '>HB', value[0:3] )
   //     except BaseException:
-  //         logging.error( ImpinjR2KGlobalErrors.to_string( value[0] ) )
+  //         logging.error( Errors.to_string( value[0] ) )
   //         return ''
 
   //     if (length + 6) != len( value ) {
@@ -592,7 +590,7 @@ export class R2KReader extends eventemitter3<R2KReaderEvents> {
   //         logging.error( 'TAGS CRC16 is ERROR.')
   //         return ''
       
-  //     error  = ( True if value[-3] == ImpinjR2KGlobalErrors.SUCCESS else False, ImpinjR2KGlobalErrors.to_string( value[-3] ) )
+  //     error  = ( True if value[-3] == Errors.SUCCESS else False, Errors.to_string( value[-3] ) )
   //     ant    = ( value[-2] & 0x03 ) + 1
   //     wcount = value[-1]
 

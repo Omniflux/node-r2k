@@ -4,8 +4,25 @@
 import { SerialPort } from 'serialport'
 import assert from 'assert';
 
-import {Commands, Command, FastSwitchInventory, Region} from './enums';
-import { READER_ANTENNA, TAG_MEMORY_BANK } from './constant';
+import {
+  Address,
+  AntennaDetector,
+  AntennaID,
+  BaudRate,
+  BeeperMode,
+  Command,
+  EPCMatch,
+  FrequencyRegion,
+  IdentifierLength,
+  InventoriedFlag,
+  InventoryRepeat,
+  LockMemoryBank,
+  LockType,
+  MemoryBank,
+  OutputPower,
+  PacketHeader,
+  SessionID
+} from './constants';
 
 
 interface MessageHandlerMap {
@@ -19,47 +36,26 @@ function register(command: Command) {
   }
 }
 
-const SessionsDict = {
-  S0: 0,
-  S1: 1,
-  S2: 2,
-  S3: 3,
-};
-
-const MemoryBank = {
-  USER: 1,
-  TID: 2,
-  EPC: 3,
-  ACCESS_PASSWORD: 4,
-  KILL_PASSWORD: 5,
-};
-const LockType = {
-  OPEN: 0,
-  LOCK: 1,
-  OPEN_FOREVER: 2,
-  LOCK_FOREVER: 3,
-};
-
 interface FastSwitchInventoryParams {
-  A: FastSwitchInventory;
+  A: AntennaID;
   Aloop: number;
-  B: FastSwitchInventory;
+  B: AntennaID;
   Bloop: number;
-  C: FastSwitchInventory;
+  C: AntennaID;
   Cloop: number;
-  D: FastSwitchInventory;
+  D: AntennaID;
   Dloop: number;
   Interval: number;
   Repeat: number;
 };
 const DefaultFSInventory: FastSwitchInventoryParams = {
-  A: FastSwitchInventory.ANTENNA1,
+  A: AntennaID.A1,
   Aloop: 1,
-  B: FastSwitchInventory.DISABLED,
+  B: AntennaID.DISABLED,
   Bloop: 1,
-  C: FastSwitchInventory.DISABLED,
+  C: AntennaID.DISABLED,
   Cloop: 1,
-  D: FastSwitchInventory.DISABLED,
+  D: AntennaID.DISABLED,
   Dloop: 1,
   Interval: 0, Repeat: 1,
 };
@@ -67,9 +63,8 @@ const DefaultFSInventory: FastSwitchInventoryParams = {
 function ord(str: string) { return str.charCodeAt(0); }
 
 export class Protocol {
-  __head: number = 0xA0; // TODO: Figure out what this should be
   __address = 0xA0;
-  #address = 0xFF;
+  #address = Address.PUBLIC;
 
   static commandMap: {[command: number]: keyof Protocol} = {};
 
@@ -88,7 +83,7 @@ export class Protocol {
     const data: number[] = (<any>this[fnName])?.(...args) ?? [];
 
     const message: number[] = [
-      this.__head,
+      PacketHeader,
       data.length + 3,
       this.__address,
       cmd,
@@ -96,7 +91,7 @@ export class Protocol {
     // Add LRC checksum
     message.push(checksum(message));
 
-    if (cmd === Commands.SET_READER_ADDRESS) {
+    if (cmd === Command.SET_READER_ADDRESS) {
       this.__address = data[0];
     }
 
@@ -111,75 +106,80 @@ export class Protocol {
     }
   }
 
-  @register(Commands.RESET)
+  @register(Command.RESET)
   reset() {
     return [];
   }
 
-  @register( Commands.SET_UART_BAUDRATE )
+  @register( Command.SET_UART_BAUDRATE )
   /**
    * 38400bps or 115200bps.
    */
   baudrate( value = 115200 ) {
-    if (value === 115200) return 4
-    else return 3;
+    if (value === 115200) return BaudRate.BD_115200;
+    else return BaudRate.BD_38400;
   }
 
-  @register( Commands.SET_READER_ADDRESS )
-  address( addr=0 ) {
+  @register( Command.SET_READER_ADDRESS )
+  address( addr: Address=0 ) {
     assert ( 0 <= addr && addr <= 254 );
     return [ addr ];
   }
 
-  @register( Commands.GET_FIRMWARE_VERSION )
+  @register( Command.GET_FIRMWARE_VERSION )
   version() {
       return [];
   }
 
-  @register( Commands.SET_WORK_ANTENNA )
+  @register( Command.SET_WORK_ANTENNA )
   // """ Set reader work antenna.
   //     @param      antenna(int) : 0 ~ 3
   // """
-  set_work_antenna( antenna = READER_ANTENNA.ANTENNA1 ) {
-      assert ( 0 <= antenna && antenna <= 3 )
+  set_work_antenna( antenna = AntennaID.A1 ) {
+      assert ( AntennaID.A1 <= antenna && antenna <= AntennaID.A4 )
       return [ antenna ]
   }
 
-  @register( Commands.GET_WORK_ANTENNA )
+  @register( Command.GET_WORK_ANTENNA )
   get_work_antenna() {
       return [];
   }
 
-  @register( Commands.SET_RF_POWER )
-  set_rf_power( ant1=0x00, ant2=0x00, ant3=0x00, ant4=0x00 ) {
-      assert (( 0 <= ant1 && ant1 <= 33 ) && ( 0 <= ant2 && ant2 <= 33 ) && ( 0 <= ant3 && ant3 <= 33 ) && ( 0 <= ant4 && ant4 <= 33 ));
+  @register( Command.SET_RF_POWER )
+  set_rf_power( ant1=OutputPower.MIN, ant2=OutputPower.MIN, ant3=OutputPower.MIN, ant4=OutputPower.MIN ) {
+      assert (
+        ( OutputPower.MIN <= ant1 && ant1 <= OutputPower.MAX ) &&
+        ( OutputPower.MIN <= ant2 && ant2 <= OutputPower.MAX ) &&
+        ( OutputPower.MIN <= ant3 && ant3 <= OutputPower.MAX ) &&
+        ( OutputPower.MIN <= ant4 && ant4 <= OutputPower.MAX )
+      );
       return [ ant1, ant2, ant3, ant4 ];
   }
 
-  @register( Commands.GET_RF_POWER )
+  @register( Command.GET_RF_POWER )
   get_rf_power() {
       return [];
   }
 
-  @register( Commands.SET_TEMPORARY_OUTPUT_POWER )
-  fast_power( value = 22 ) {
-      assert ( 22 <= value && value <= 33 );
+  @register( Command.SET_TEMPORARY_OUTPUT_POWER )
+  fast_power( value = OutputPower.MIN_TEMPORARY ) {
+      assert ( OutputPower.MIN_TEMPORARY <= value && value <= OutputPower.MAX );
       return [ value ];
   }
 
-  @register( Commands.SET_BEEPER_MODE )
-  beeper( mode = 0 ) {
-      assert ( 0 <= mode && mode <= 2 )
+  @register( Command.SET_BEEPER_MODE )
+  beeper( mode = BeeperMode.QUIET ) {
+      assert ( mode in BeeperMode )
       return [ mode ]
   }
 
-  @register( Commands.GET_ANT_CONNECTION_DETECTOR )
+  @register( Command.GET_ANT_CONNECTION_DETECTOR )
   get_ant_connection_detector() {
       return [];
   }
 
-  @register( Commands.SET_ANT_CONNECTION_DETECTOR )
-  set_ant_connection_detector( loss=0 ) {
+  @register( Command.SET_ANT_CONNECTION_DETECTOR )
+  set_ant_connection_detector( loss=AntennaDetector.DISABLED ) {
     // """
     //     @param  loss = 0 # Disabled detector.
     //             loss (Unit:dB) 
@@ -188,69 +188,69 @@ export class Protocol {
     return [ loss ]
   }
 
-  @register( Commands.SET_READER_IDENTIFIER )
+  @register( Command.SET_READER_IDENTIFIER )
   set_reader_identifier( sn = '0123456789AB' ) {
     const data = sn.split('').map(s => s.charCodeAt(0));
-    while (data.length < 12) {
+    while (data.length < IdentifierLength) {
       data.push(0xff);
     }
     return data;
   }
 
-  @register( Commands.GET_READER_IDENTIFIER )
+  @register( Command.GET_READER_IDENTIFIER )
   get_reader_identifier() {
     return [];
   }
 
-  @register( Commands.INVENTORY )
-  inventory( repeat=0xFF ) {
+  @register( Command.INVENTORY )
+  inventory( repeat=InventoryRepeat.MINIMUM ) {
     return [ repeat ]
   }
 
-  @register( Commands.GET_INVENTORY_BUFFER )
+  @register( Command.GET_INVENTORY_BUFFER )
   get_inventory_buffer() {
     return [];
   }
 
-  @register( Commands.GET_INVENTORY_BUFFER_TAG_COUNT )
+  @register( Command.GET_INVENTORY_BUFFER_TAG_COUNT )
   get_inventory_buffer_tag_count() {
     return [];
   }
   
-  @register( Commands.GET_AND_RESET_INVENTORY_BUFFER )
+  @register( Command.GET_AND_RESET_INVENTORY_BUFFER )
   get_and_reset_inventory_buffer() {
     return [];
   }
 
-  @register( Commands.RESET_INVENTORY_BUFFER )  
+  @register( Command.RESET_INVENTORY_BUFFER )  
   reset_inventory_buffer() {
     return [];
   }
 
-  @register( Commands.REAL_TIME_INVENTORY )
-  rt_inventory( repeat=0xFF ) {
+  @register( Command.REAL_TIME_INVENTORY )
+  rt_inventory( repeat=InventoryRepeat.MINIMUM ) {
     return [ repeat ]
   }
 
-  @register( Commands.CUSTOMIZED_SESSION_TARGET_INVENTORY )
-  session_inventory( session: keyof typeof SessionsDict = 'S1', target='A', repeat=1 ) {
+  @register( Command.CUSTOMIZED_SESSION_TARGET_INVENTORY )
+  session_inventory( session: keyof typeof SessionID = 'S1', target='A', repeat=1 ) {
     return [
-      SessionsDict[session] || 1,
-      target === 'B' ? 1 : 0,
+      SessionID[session] || SessionID.S1,
+      target === 'B' ? InventoriedFlag.B : InventoriedFlag.A,
       repeat
     ];
   }
 
-  @register( Commands.FAST_SWITCH_ANT_INVENTORY )
+  @register( Command.FAST_SWITCH_ANT_INVENTORY )
   fast_switch_ant_inventory( {A, Aloop, B, Bloop, C, Cloop, D, Dloop, Interval, Repeat}: FastSwitchInventoryParams = DefaultFSInventory) {
     return [
-      A || FastSwitchInventory.DISABLED, 
+      A || AntennaID.DISABLED, 
       Aloop || 1,
-      B || FastSwitchInventory.DISABLED, 
+      B || AntennaID.DISABLED, 
       Bloop || 1,
-      C || FastSwitchInventory.DISABLED, 
+      C || AntennaID.DISABLED, 
       Cloop || 1,
-      D || FastSwitchInventory.DISABLED, 
+      D || AntennaID.DISABLED, 
       Dloop || 1,
       Interval || 5,
       Repeat || 1,
@@ -274,15 +274,15 @@ export class Protocol {
     // return ret
   }
 
-  @register( Commands.GET_READER_TEMPERATURE )
+  @register( Command.GET_READER_TEMPERATURE )
   temperature() {
     return [];
   }
 
-  @register( Commands.READ )
+  @register( Command.READ )
   read( bank='EPC', addr=0, size=2, password=[ 0, 0, 0, 0 ] ) {
     const body = [
-      TAG_MEMORY_BANK[bank as 'EPC'] || 1,
+      MemoryBank[bank as 'EPC'] || MemoryBank.EPC,
       addr,
       size,
       ...password,
@@ -290,11 +290,11 @@ export class Protocol {
     return body;
   }
 
-  @register( Commands.WRITE )
+  @register( Command.WRITE )
   write( data: number[], bank='EPC', addr=0, password=[ 0, 0, 0, 0 ] ) {
     const body = [
       ...password,
-      TAG_MEMORY_BANK[bank as 'EPC'] || 1,
+      MemoryBank[bank as 'EPC'] || MemoryBank.EPC,
       (bank === 'EPC' && addr === 0) ? 2 : addr,
       Math.floor(data.length / 2),
       ...data,
@@ -303,11 +303,11 @@ export class Protocol {
   }
 
   // TODO: Should this really be the same as write_block?
-  @register( Commands.WRITE_BLOCK )
+  @register( Command.WRITE_BLOCK )
   write_block( data: number[], bank='EPC', addr=0, password=[ 0, 0, 0, 0 ] ) {
     const body = [
       ...password,
-      TAG_MEMORY_BANK[bank as 'EPC'] || 1,
+      MemoryBank[bank as 'EPC'] || MemoryBank.EPC,
       (bank === 'EPC' && addr === 0) ? 2 : addr,
       Math.floor(data.length / 2),
       ...data,
@@ -315,7 +315,7 @@ export class Protocol {
     return body;
   }
 
-  @register( Commands.LOCK )
+  @register( Command.LOCK )
   lock( bank='EPC', lock_type='OPEN', password=[ 0, 0, 0, 0 ] ) {
     // """
     //     @param
@@ -326,21 +326,21 @@ export class Protocol {
     
     const body = [
       ...password,
-      MemoryBank[bank as 'EPC'] || 1,
-      LockType[lock_type as 'OPEN'] || 1,
+      LockMemoryBank[bank as 'EPC'] || LockMemoryBank.EPC,
+      LockType[lock_type as 'OPEN'] || LockType.OPEN,
     ];
     return body;
   }
 
-  @register( Commands.KILL )
+  @register( Command.KILL )
   kill( password=[ 0, 0, 0, 0 ] ) {
     assert ( Array.isArray(password) );
     return password;
   }
 
-  @register( Commands.SET_ACCESS_EPC_MATCH )
-  set_access_epc_match( mode: 0 | 1, epc: number[] ) {
-    assert( mode === 0 || mode === 1 )
+  @register( Command.SET_ACCESS_EPC_MATCH )
+  set_access_epc_match( mode: EPCMatch, epc: number[] ) {
+    assert( mode in EPCMatch )
     const body = [
       mode,
       epc.length,
@@ -349,27 +349,27 @@ export class Protocol {
     return body;
   }
 
-  @register( Commands.GET_ACCESS_EPC_MATCH )
+  @register( Command.GET_ACCESS_EPC_MATCH )
   get_access_epc_match() {
     return [];
   }
 
-  @register( Commands.GET_RF_PORT_RETURN_LOSS )
+  @register( Command.GET_RF_PORT_RETURN_LOSS )
   get_rf_port_return_loss( param: number ) {
     return [ param ]
   }
 
-  @register( Commands.SET_FREQUENCY_REGION )
+  @register( Command.SET_FREQUENCY_REGION )
   set_frequency_region( region: number, start: number, stop: number ) {
     return [ region, start, stop ]
   }
 
-  @register( Commands.GET_FREQUENCY_REGION )
+  @register( Command.GET_FREQUENCY_REGION )
   get_frequency_region() {
     return [];
   }
 
-  @register( Commands.SET_FREQUENCY_REGION )
+  @register( Command.SET_FREQUENCY_REGION )
   set_frequency_region_user( start: number, space: number, quantity: number ) {
     // """
     //     start : e.g. 915000KHz --> 0D F6 38 (unit KHz)
@@ -378,7 +378,7 @@ export class Protocol {
     // """
     assert( quantity > 0 )
     const body = [
-      Region.USER,
+      FrequencyRegion.CUSTOM,
       space*10,
       quantity,
       ( ( start & 0x00FF0000 ) >> 16 ) & 0x000000FF,
@@ -388,17 +388,17 @@ export class Protocol {
     return body;
   }
 
-  @register( Commands.SET_RF_LINK_PROFILE )
+  @register( Command.SET_RF_LINK_PROFILE )
   set_rf_link_profile( profile_id: number ) {
     return [ profile_id ];
   }
 
-  @register( Commands.GET_RF_LINK_PROFILE )
+  @register( Command.GET_RF_LINK_PROFILE )
   get_rf_link_profile() {
     return [];
   }
 
-  @register( Commands.ISO18000_6B_INVENTORY )
+  @register( Command.ISO18000_6B_INVENTORY )
   iso1800_6b_inventory() {
     // """ ISO 18000 - 6B """
     return [];
