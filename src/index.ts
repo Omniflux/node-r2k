@@ -363,13 +363,17 @@ export class R2KReader extends EventEmitter<R2KReaderEvents> {
               responseHandler.command
             )}, received ${getCommandName(command)}`
           );
-          if (command === Command.GET_INVENTORY_BUFFER || command === Command.GET_AND_RESET_INVENTORY_BUFFER)
+          if (
+            responseHandler.command === Command.GET_INVENTORY_BUFFER ||
+            responseHandler.command === Command.GET_AND_RESET_INVENTORY_BUFFER
+          )
             this.queues[address]!.inventory = [];
-          else if (command === Command.TAG_MASK && packet.length > 13) this.queues[address]!.masks = [];
-          else if (command === Command.READ) this.queues[address]!.read = [];
-          else if (command === Command.WRITE || command === Command.WRITE_BLOCK) this.queues[address]!.write = [];
-          else if (command === Command.LOCK) this.queues[address]!.lock = [];
-          else if (command === Command.KILL) this.queues[address]!.kill = [];
+          else if (responseHandler.command === Command.TAG_MASK && packet.length > 13) this.queues[address]!.masks = [];
+          else if (responseHandler.command === Command.READ) this.queues[address]!.read = [];
+          else if (responseHandler.command === Command.WRITE || responseHandler.command === Command.WRITE_BLOCK)
+            this.queues[address]!.write = [];
+          else if (responseHandler.command === Command.LOCK) this.queues[address]!.lock = [];
+          else if (responseHandler.command === Command.KILL) this.queues[address]!.kill = [];
         }
       }
     }
